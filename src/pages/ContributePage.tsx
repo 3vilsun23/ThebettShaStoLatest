@@ -83,17 +83,23 @@ export function ContributePage({ navigate, theme, onToggleTheme }: Props) {
     setError(null);
     setSuccess(false);
 
-    const word = input.trim();
-    if (!word) {
-      setError('Please enter a word.');
+    const raw = input;
+    const trimmed = raw.trim();
+
+    if (!trimmed) {
+      setError('Please enter a word — empty input is not allowed.');
       return;
     }
-    if (/\s/.test(word)) {
-      setError('Only a single word — no spaces.');
+    if (/\s/.test(trimmed)) {
+      setError('Only a single word is allowed — no spaces between words.');
       return;
     }
-    if (word.length > 50) {
-      setError('That word is too long.');
+    if (!/^[A-Za-z]+$/.test(trimmed)) {
+      setError('Only letters A–Z are allowed. Numbers, punctuation, emojis, and symbols are not permitted.');
+      return;
+    }
+    if (trimmed.length > 50) {
+      setError('That word is too long. Please keep it under 50 characters.');
       return;
     }
     if (!cooldown?.canContribute) {
@@ -102,35 +108,46 @@ export function ContributePage({ navigate, theme, onToggleTheme }: Props) {
     }
 
     setSubmitting(true);
-    const displayName =
-      user?.user_metadata?.full_name ||
-      user?.user_metadata?.name ||
-      user?.email?.split('@')[0] ||
-      'Anonymous';
 
-    const { error: insertError } = await supabase.from('story_words').insert({
-      word,
-      author_name: displayName,
-    });
-
-    setSubmitting(false);
-
-    if (insertError) {
-      const msg = insertError.message;
-      if (msg.includes('24 hours') || msg.includes('cooldown')) {
-        setError('You can only add one word every 24 hours. Please wait for your cooldown to expire.');
-        checkCooldown();
-      } else {
-        setError(msg);
+    try {
+      const apiUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/submit-word`;
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+      };
+      const session = (await supabase.auth.getSession()).data.session;
+      if (session?.access_token) {
+        headers.Authorization = `Bearer ${session.access_token}`;
       }
-      return;
+
+      const response = await fetch(apiUrl, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ word: trimmed }),
+      });
+
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok || !data?.success) {
+        const msg = data?.error || `Your word could not be submitted (${response.status}). Please try again.`;
+        setError(msg);
+        if (response.status === 429) {
+          checkCooldown();
+        }
+        setSubmitting(false);
+        return;
+      }
+
+      setSuccess(true);
+      setInput('');
+      refetch();
+      checkCooldown();
+      setTimeout(() => setSuccess(false), 4000);
+    } catch {
+      setError('Network error — could not reach the server. Please try again.');
     }
 
-    setSuccess(true);
-    setInput('');
-    refetch();
-    checkCooldown();
-    setTimeout(() => setSuccess(false), 4000);
+    setSubmitting(false);
   };
 
   if (authLoading) {
@@ -196,8 +213,11 @@ export function ContributePage({ navigate, theme, onToggleTheme }: Props) {
             <Feather className="w-5 h-5 text-accent-500 dark:text-accent-400" strokeWidth={1.5} />
             <h2 className="font-serif text-2xl font-medium text-ink-800 dark:text-ink-100">Add Your Word</h2>
           </div>
-          <p className="font-sans text-sm text-ink-500 dark:text-ink-400 mb-6">
+          <p className="font-sans text-sm text-ink-500 dark:text-ink-400 mb-2">
             Choose carefully — you only get one word every 24 hours.
+          </p>
+          <p className="font-sans text-xs text-ink-400 dark:text-ink-500 mb-6">
+            One real English word, letters only. No numbers, punctuation, emojis, or profanity.
           </p>
 
           {/* Cooldown banner */}
@@ -230,7 +250,7 @@ export function ContributePage({ navigate, theme, onToggleTheme }: Props) {
                 type="text"
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
-                placeholder="Type a single word…"
+                placeholder="Type one English word…"
                 disabled={submitting || !cooldown?.canContribute}
                 maxLength={50}
                 autoFocus
